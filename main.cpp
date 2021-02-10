@@ -1,4 +1,4 @@
-//////////////////////////
+/////////////////////////
 // Copyright (c) 2015-2019 Julian Adamek
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -95,6 +95,7 @@ int main(int argc, char **argv)
 
 	int i, j, cycle = 0, snapcount = 0, pkcount = 0, restartcount = 0, usedparams, numparam = 0, numspecies, done_hij;
 	int numsteps_ncdm[MAX_PCL_SPECIES-2];
+	int numsteps_defect;
 	long numpts3d;
 	int box[3];
 	double dtau, dtau_old, dx, tau, a, fourpiG, tmp, start_time;
@@ -108,8 +109,8 @@ int main(int argc, char **argv)
 	metadata sim;
 	cosmology cosmo;
 	icsettings ic;
+	defects_metadata defects_sim;
 	double T00hom;
-	global_defects gdefects;
 
 #ifndef H5_DEBUG
 	H5Eset_auto2 (H5E_DEFAULT, NULL, NULL);
@@ -185,18 +186,18 @@ int main(int argc, char **argv)
 	numparam = loadParameterFile(settingsfile, params);
 
 	usedparams = parseMetadata(params, numparam, sim, cosmo, ic);
-    
+
     COUT << " parsing of settings file completed. " << numparam << " parameters found, " << usedparams << " were used." << endl;
 	/***
-
 	Here the parameters are read...
 	somethibng like:
 	(parseDefectMetadata should be just as parseMetadata but take care only of the defect params(return the number of used params, just as parseMetadata))
 	usedparams += parseDefectMetadata(params,numparam,metadat_defect);
-
 	***/
-	
-	usedparams = parseDefectMetadata(params, numparam, gdefects);
+
+
+	usedparams = parseDefectMetadata(params, numparam, defects_sim);
+
 
 	COUT << " parsing of defect parameters from the settings file completed. " << numparam << " parameters found including defects, " << usedparams << " were used." << endl<<endl;
 
@@ -292,7 +293,7 @@ int main(int argc, char **argv)
 
 	dx = 1.0 / (double) sim.numpts;
 	numpts3d = (long) sim.numpts * (long) sim.numpts * (long) sim.numpts;
-
+	
 	for (i = 0; i < 3; i++) // particles may never move farther than to the adjacent domain
 	{
 		if (lat.sizeLocal(i)-1 < sim.movelimit)
@@ -311,15 +312,20 @@ int main(int argc, char **argv)
 
 	dtau_old = 0.;
 
-/***
+    /***
 
-here put the initialization of the strings.... need to be thought a bit....
+    here put the initialization of the strings.... need to be thought a bit....
 
-maybe better to put it in "generateIC_basic_strings"
+    maybe better to put it in "generateIC_basic_strings"
 
-***/
+    ***/
 
-    	Global_defect simulate(lat, latFT, dx, dtau, gdefects);
+    /***
+    Add the defect class here and initialise
+    ***/
+    
+    GlobalDefect defects;
+    defects.initialize(&lat, &latFT, dx, &sim, &defects_sim);
 
 
 	if (ic.generator == ICGEN_BASIC)
@@ -345,8 +351,9 @@ maybe better to put it in "generateIC_basic_strings"
 		COUT << " error: baryon_flag > 1 after IC generation, something went wrong in IC generator!" << endl;
 		parallel.abortForce();
 	}
-
+	
 	numspecies = 1 + sim.baryon_flag + cosmo.num_ncdm;
+	
 	parallel.max<double>(maxvel, numspecies);
 
 	if (sim.gr_flag > 0)
@@ -744,6 +751,7 @@ Compute phi
 		}
 #endif // EXACT_OUTPUT_REDSHIFTS
 
+
 #ifdef BENCHMARK
 		spectra_output_time += MPI_Wtime() - ref_time;
 #endif
@@ -768,7 +776,11 @@ Compute phi
 				numsteps_ncdm[i] = (int) ceil(dtau * maxvel[i+1+sim.baryon_flag] / dx / sim.movelimit);
 			else numsteps_ncdm[i] = 1;
 		}
-
+        // numsteps for defect
+        if (0.2 * dx * C_SPEED_OF_LIGHT > dx * sim.movelimit)
+			numsteps_defect = (int) ceil(0.2 * dx * C_SPEED_OF_LIGHT / dx / sim.movelimit );
+		else numsteps_defect = 1;
+		
 		if (cycle % CYCLE_INFO_INTERVAL == 0)
 		{
 			COUT << " cycle " << cycle << ", time integration information: max |v| = " << maxvel[0] << " (cdm Courant factor = " << maxvel[0] * dtau / dx;
@@ -791,8 +803,12 @@ Compute phi
 					COUT << ", ";
 				}
 			}
+            COUT << endl;
+            
+            // TO DO 
+            // output numsteps of the defects
+            COUT<< " time step subdivision for defect: "<<numsteps_defect<< " dtau is: "<<dtau<<" dx is: "<<dx<<endl;
 
-			COUT << endl;
 		}
 
 #ifdef BENCHMARK
@@ -838,12 +854,9 @@ Compute phi
 
 		/***
 		Here we update the strings...
-
 		we have to use a temporary scale factor (just as for the ncdm particles...)
-
 		--determine a number of substep for the string (numsteps_strings), which is dependent of the value of dtau....
 		(as it is done (745-750) for the ncdm parts.)
-
 		-- perform a loop over the those steps:
 			(all updates are done by dtau / 2 / numsteps_strings)
 				-- update "string momemtum fields" (pi??)
@@ -852,7 +865,32 @@ Compute phi
 				-- update temporary scale factor
 		***/
 
+//        defects.update_phi(dtau);
+//        defects.update_pi(dtau, a, Hconf(a, fourpiG, cosmo));
 
+		int ratio_def;
+		
+		if(dtau > (0.2 * dx))
+		{
+			ratio_def = dtau / 0.2 / dx;
+		}
+		else
+			ratio_def = 0.2 * dx / dtau;
+			
+		COUT<<" the ratio is: "<<ratio_def<<endl;
+
+		tmp = a;
+        for(i=0; i < ratio_def; i++)
+        {
+		    for (j = 0; j < numsteps_defect; j++)
+		    {
+		        defects.update_phi(0.2 * dx / numsteps_defect);
+		        defects.update_pi(dx * 0.2 / numsteps_defect,tmp,Hconf(tmp, fourpiG, cosmo));
+		        rungekutta4bg(tmp, fourpiG, cosmo, 0.2 * dx / numsteps_defect);
+		        
+		    }
+		}
+		COUT<<" comparing tmp and a == "<< tmp<<" "<<a<<endl;
 
 
 		// cdm and baryon particle update
@@ -965,9 +1003,7 @@ Compute phi
 		cycle_time += MPI_Wtime()-cycle_start_time;
 #endif
 
-      /////// adding defects evolution
-      simulate.evolve(dtau, a, Hconf(a, fourpiG, cosmo));
-     // Global_defect().field_leapfrog_update_phi(dtau);
+
 
 }// end of the main loop...
 
@@ -1022,3 +1058,4 @@ Compute phi
 
 	return 0;
 }
+

@@ -1,7 +1,7 @@
 //////////////////////////
 // metadata.hpp
 //////////////////////////
-// 
+//
 // Constants and metadata structures
 //
 // Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London)
@@ -288,7 +288,7 @@ struct cosmology
 	int num_ncdm;
 };
 
-struct global_defects
+struct defects_metadata
 {
     int defect_flag;
     int nComponents;
